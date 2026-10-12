@@ -1,0 +1,44 @@
+node_modules
+.env
+.env.local
+twilio-functions/.env
+twilio-functions/.twiliodeployinfo
+.vercel
+*.log
+
+# Android / Gradle
+android/.gradle
+android/.kotlin
+android/build
+android/app/build
+android/local.properties
+*.iml
+.idea
+build/
+
+# arm64 aapt2-under-qemu sysroot build inputs (see tools/aapt2-qemu)
+*.deb
+
+# Device-specific test evidence and the currently deployed personal timer batch.
+/AGENTS.md
+/NEXT_AGENT_HANDOFF.md
+CALL_REPAIR_TEST_LOG.md
+tools/scheduled-call-batch.mjs
+tools/scheduled-call-batch.test.mjs
+tools/scheduled-call-termux.sh
+tools/scheduled-call-health-termux.sh
+
+# Private runtime configuration, signing material and generated artifacts.
+google-services.json
+.env.*
+!.env.example
+*service-account*.json
+*serviceAccount*.json
+*.pem
+*.key
+*.p12
+*.jks
+*.keystore
+*.apk
+*.aab
+*.hprof

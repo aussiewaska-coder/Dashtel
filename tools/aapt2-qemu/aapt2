@@ -1,0 +1,9 @@
+#!/bin/sh
+# Gradle/AGP cannot execute Google's x86-64 aapt2 on this arm64 box, so run it
+# under qemu-user with an amd64 sysroot (/root/amd64-sysroot, built from Debian
+# amd64 libc6/libstdc++6/zlib1g/libgcc-s1). Selected via
+#   android.aapt2FromMavenOverride in android/gradle.properties
+AAPT2="${AAPT2_X86_64:-/root/android-sdk/build-tools/36.0.0/aapt2}"
+SYSROOT="${AAPT2_SYSROOT:-/root/amd64-sysroot}"
+exec qemu-x86_64 -L "$SYSROOT" "$SYSROOT/lib64/ld-linux-x86-64.so.2" \
+  --inhibit-rpath "${AAPT2%/*}" "$AAPT2" "$@"
