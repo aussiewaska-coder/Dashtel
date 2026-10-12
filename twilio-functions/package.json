@@ -2,7 +2,7 @@
   "name": "twilio-dialer-functions",
   "version": "1.0.0",
   "private": true,
-  "description": "Protected Twilio Voice webhook for DashPhone",
+  "description": "Twilio Voice routing and protected SMS notification relay for DashPhone",
   "scripts": {
     "deploy": "twilio serverless:deploy --service-name twilio-dialer",
     "test": "node --test test/*.test.js"

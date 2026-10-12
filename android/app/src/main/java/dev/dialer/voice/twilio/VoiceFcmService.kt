@@ -8,11 +8,16 @@ class VoiceFcmService : FirebaseMessagingService() {
 
     override fun onNewToken(token: String) {
         VoiceManager.onNewFcmToken()
+        dev.dialer.voice.data.SmsManager.onNewToken()
     }
 
     override fun onMessageReceived(message: RemoteMessage) {
         val payload = message.data
         if (payload.isEmpty()) return
+        if (payload["type"] == "dashtel.sms") {
+            dev.dialer.voice.data.SmsManager.receivePush(payload)
+            return
+        }
         // Twilio Voice FCM messages identify themselves with `twi_message_type`
         // (e.g. `twilio.voice.call` / `twilio.voice.cancel`). Do not log payload
         // values: they contain call metadata and may include personal data.

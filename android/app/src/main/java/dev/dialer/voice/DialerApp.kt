@@ -14,6 +14,7 @@ class DialerApp : Application() {
         super.onCreate()
         ConfigStore.init(this)
         TwilioRest.init(this)
+        dev.dialer.voice.data.SmsManager.init(this)
         NetworkMonitor.init(this)
         Notifier.createChannels(this)
         TelecomCallManager.init(this)

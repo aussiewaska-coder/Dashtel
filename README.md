@@ -13,6 +13,8 @@ and make or receive calls over Wi-Fi or mobile data—no SIM calling required.
 - Bluetooth, speaker and earpiece controls with a focused in-call keypad.
 - Push-delivered incoming calls through Firebase Cloud Messaging.
 - Contacts, grouped call history, and playback of available Twilio recordings.
+- A separate Messages pane with searchable SMS conversations, drafts, unread
+  counts, delivery status, and incoming Android notifications.
 - Light and dark themes, with layouts that adapt to phone and desktop screens.
 - Device-encrypted settings and a small, self-hosted Twilio Function backend.
 
@@ -22,7 +24,7 @@ required; normal Twilio usage charges apply.
 
 ### Project status
 
-The project is now named **Dashtel**. The current 1.1.9 Android build and APK
+The project is now named **Dashtel**. The current 1.2.0 Android build and APK
 are still labelled **DashPhone**; setup instructions below use that installed
 name. The app is under active development. Validate incoming calls, audio
 routing, background delivery and network handovers on your device before
@@ -33,8 +35,8 @@ carrier.
 
 The app uses Twilio Voice SDK, stores its account credentials encrypted on the
 device, and signs short-lived Voice Access Tokens locally. Twilio Functions
-provides the single webhook that returns call instructions; Vercel is not part
-of the call path.
+provides call routing and an incoming-SMS notification relay; Vercel is not part
+of either path. SMS sending and history use Twilio's Messages REST API directly.
 
 ## Call path
 
@@ -57,7 +59,8 @@ key.
 ## Configure Twilio
 
 1. Create a Twilio API key and note the Account SID, API Key SID, and API Key
-   Secret. Use a key with only the Voice permissions this app needs.
+   Secret. The app needs Voice permissions plus Messages read/create and
+   IncomingPhoneNumbers read/update for SMS and notification setup.
 2. Create a TwiML App. After deploying the Function below, set its Voice URL to
    the Function's `/voice` URL using `POST`.
 3. Point your Twilio phone number's incoming Voice webhook to the same Function
@@ -122,6 +125,54 @@ Twilio's parent and child call legs are grouped into one user-visible call, and
 recordings from either leg are streamed into app-private cache for playback.
 Recording is off by default. Inbound calls to a Twilio Client are not recorded
 by the outbound `<Dial>` recording option.
+
+## SMS setup and use
+
+SMS requires an SMS-capable Twilio number. Sending uses the number in Settings,
+and normal per-segment Twilio charges apply. The app supports SMS destinations
+in Australia, Cambodia and Thailand, subject to Twilio's permissions and
+country/sender requirements. It does not use SIM messaging permissions.
+
+1. In the same Firebase project as the Android app, create a service account
+   with the **Firebase Cloud Messaging API Admin** role. Enable the Firebase
+   Cloud Messaging API if necessary, and generate a JSON private key.
+2. Store that file at
+   `twilio-functions/assets/fcm-service-account.private.json`. This path is
+   Git-ignored. The `.private.json` suffix is essential: Twilio deploys it as a
+   private asset, accessible to Functions at `/fcm-service-account.json`.
+   Never put the key in Android resources or publish it as a public asset.
+3. Redeploy the existing service with `npm run deploy`. Keep `/sms` **protected**
+   and `/sms-status` public. The status endpoint returns only a readiness flag.
+4. Open **Messages → Enable notifications**. The app checks number capability
+   and relay readiness, then sets only the number's SMS URL/method. It refuses
+   to overwrite a different SMS webhook or Messaging TwiML application.
+   Allow Android notifications, including the **Messages** notification channel.
+
+The SMS URL stores this handset's FCM registration token in a query parameter;
+keep it private. Twilio signs incoming SMS requests, the relay checks the
+account and receiving number, then sends a high-priority FCM data message to
+that device. Enabling notifications on another handset transfers background
+SMS alerts to that handset. This version supports one notification handset per
+line; every configured handset can still refresh Twilio message history.
+Token refresh updates the route while the app remains configured.
+
+Messages are cached in app-private storage with local read state and drafts;
+app backup is disabled. Opening Messages refreshes both inbound and outbound
+history, with further refreshes only while the screen is resumed. **Load older
+messages** pages through Twilio history. Tap a notification to open its thread.
+Long notification previews are replaced with full text on refresh. Sent means
+Twilio/carrier submission; **delivered** is shown only when Twilio reports it.
+The part count is an estimate; carrier billing and encoding rules may differ.
+After an uncertain network failure, refresh before sending again to avoid a
+duplicate charge. Drafts remain available until a confirmed send.
+
+MMS attachment counts are shown, but this version sends text only and does not
+view media attachments. Alphanumeric senders and unsupported destinations are
+readable but cannot be replied to. Background alerts require a deployed relay,
+network access and Android notification permission; force-stopping the app
+prevents FCM delivery until it is opened again. Messages remain available from
+Twilio even if a push is missed. Numbers attached to a Twilio Messaging Service
+must route incoming messages to the number's webhook for this relay to run.
 
 ## Android build
 

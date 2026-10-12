@@ -5,6 +5,10 @@ import dev.dialer.voice.model.CallRecord
 import dev.dialer.voice.model.CallHistory
 import dev.dialer.voice.model.CallLeg
 import dev.dialer.voice.model.Recording
+import dev.dialer.voice.model.SmsMessage
+import dev.dialer.voice.model.SmsPage
+import dev.dialer.voice.model.normalizeSmsRecipient
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import dev.dialer.voice.diagnostics.DiagnosticLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -212,6 +216,95 @@ object TwilioRest {
             }
         }
         CallHistory.group(legs, recordingsByCall)
+    }
+
+    suspend fun listMessages(config: AppConfig, incoming: Boolean, next: String? = null): SmsPage {
+        val prefix = "/2010-04-01/Accounts/${config.accountSid.trim()}"
+        val suffix = if (next == null) {
+            val filter = if (incoming) "To" else "From"
+            "/Messages.json?PageSize=50&$filter=${URLEncoder.encode(config.phoneNumber.trim(), "UTF-8") }"
+        } else {
+            // Never attach account credentials to a server-supplied foreign URL.
+            require(next.startsWith("$prefix/Messages.json?")) { "Invalid message page" }
+            next.removePrefix(prefix)
+        }
+        val json = get(config, suffix)
+        val array = json.optJSONArray("messages")
+        val messages = buildList {
+            if (array != null) for (i in 0 until array.length()) {
+                val message = SmsMessage.fromJson(array.getJSONObject(i))
+                if (message.from == config.phoneNumber.trim() || message.to == config.phoneNumber.trim()) add(message)
+            }
+        }
+        return SmsPage(messages, json.text("next_page_uri"))
+    }
+
+    suspend fun getMessage(config: AppConfig, sid: String): SmsMessage {
+        require(Regex("^[SM]M[0-9a-fA-F]{32}$").matches(sid))
+        return SmsMessage.fromJson(get(config, "/Messages/$sid.json"))
+    }
+
+    suspend fun sendMessage(config: AppConfig, to: String, body: String): SmsMessage {
+        require(normalizeSmsRecipient(to) == to) { "Use an Australian, Cambodian or Thai number" }
+        require(body.isNotBlank() && body.length <= 1600) { "Enter a message of up to 1,600 characters" }
+        return SmsMessage.fromJson(postSms(config, "/Messages.json", FormBody.Builder()
+            .add("From", config.phoneNumber.trim()).add("To", to).add("Body", body).build()))
+    }
+
+    private suspend fun postSms(config: AppConfig, suffix: String, form: FormBody): JSONObject =
+        withContext(Dispatchers.IO) {
+            val request = Request.Builder().url(endpoint(config, suffix))
+                .header("Authorization", authHeader(config)).post(form).build()
+            // A lost response may still have sent the SMS. Never automatically replay a POST.
+            http.newBuilder().retryOnConnectionFailure(false).followRedirects(false).build()
+                .newCall(request).execute().use { response ->
+                    val json = runCatching { JSONObject(response.body?.string().orEmpty()) }.getOrNull()
+                    if (!response.isSuccessful) throw TwilioApiError(response.code, json?.text("code"),
+                        json?.text("message") ?: "Twilio rejected the request")
+                    json ?: throw IOException("Twilio returned an unreadable response")
+                }
+        }
+
+    suspend fun smsLine(config: AppConfig): JSONObject {
+        val number = URLEncoder.encode(config.phoneNumber.trim(), "UTF-8")
+        val numbers = get(config, "/IncomingPhoneNumbers.json?PhoneNumber=$number").optJSONArray("incoming_phone_numbers")
+        val line = (0 until (numbers?.length() ?: 0)).map { numbers!!.getJSONObject(it) }
+            .firstOrNull { it.optString("phone_number") == config.phoneNumber.trim() }
+            ?: throw IOException("The configured number is not assigned to this account")
+        require(line.optJSONObject("capabilities")?.optBoolean("sms") == true) {
+            "This Twilio number does not support SMS. Choose an SMS-capable number in Settings."
+        }
+        return line
+    }
+
+    suspend fun enableSmsPush(config: AppConfig, deviceToken: String) {
+        val line = smsLine(config)
+        val voiceUrl = get(config, "/Applications/${config.twimlAppSid.trim()}.json").text("voice_url")
+            ?.toHttpUrl() ?: throw IOException("Configure the Twilio Voice webhook first")
+        require(voiceUrl.isHttps && voiceUrl.host.endsWith(".twil.io")) { "SMS setup needs the deployed Twilio Function URL" }
+        val target = voiceUrl.newBuilder().encodedPath("/sms").query(null).fragment(null).build()
+        val ready = withContext(Dispatchers.IO) {
+            val request = Request.Builder().url(target.newBuilder().encodedPath("/sms-status").build()).get().build()
+            http.newBuilder().followRedirects(false).build().newCall(request).execute().use { response ->
+                response.isSuccessful && runCatching { JSONObject(response.body?.string().orEmpty()).optBoolean("ready") }.getOrDefault(false)
+            }
+        }
+        require(ready) { "Deploy the SMS relay and its private Firebase credential before enabling notifications." }
+        val existing = line.text("sms_url")
+        val existingUrl = existing?.let { runCatching { it.toHttpUrl() }.getOrNull() }
+        val ours = existingUrl?.let { it.host == target.host && it.encodedPath == "/sms" && it.isHttps } == true
+        require(line.text("sms_application_sid").isNullOrBlank()) { "This number uses a Messaging TwiML app. Remove that SMS routing in Twilio before enabling notifications." }
+        require(existing.isNullOrBlank() || ours || existingUrl?.host == "demo.twilio.com") {
+            "This number already has another SMS webhook. Clear it in Twilio before enabling DashPhone notifications."
+        }
+        require(Regex("^[a-zA-Z0-9_:-]{32,512}$").matches(deviceToken)) { "Invalid Firebase device token" }
+        if (!ours || existingUrl?.queryParameter("device") != deviceToken) {
+            val sid = line.getString("sid")
+            require(Regex("^PN[a-fA-F0-9]{32}$").matches(sid))
+            postSms(config, "/IncomingPhoneNumbers/$sid.json", FormBody.Builder()
+                .add("SmsUrl", target.newBuilder().addQueryParameter("device", deviceToken).build().toString())
+                .add("SmsMethod", "POST").build())
+        }
     }
 
     private suspend fun recordingIndex(config: AppConfig): Map<String, List<String>> {

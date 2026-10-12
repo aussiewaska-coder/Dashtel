@@ -44,6 +44,7 @@ import androidx.compose.material.icons.filled.Contacts
 import androidx.compose.material.icons.filled.Dialpad
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.automirrored.filled.Message
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -114,12 +115,16 @@ import dev.dialer.voice.ui.DashPhoneSplash
 import dev.dialer.voice.ui.HistoryScreen
 import dev.dialer.voice.ui.RegistrationStatusChip
 import dev.dialer.voice.ui.SettingsScreen
+import dev.dialer.voice.ui.MessagesScreen
+import dev.dialer.voice.data.SmsManager
+import dev.dialer.voice.notifications.SmsNotifier
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import java.io.File
 
 class MainActivity : ComponentActivity() {
     private var externalNumber by mutableStateOf<String?>(null)
+    private var externalMessagePeer by mutableStateOf<String?>(null)
     private var themeMode by mutableStateOf(ThemeMode.System)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -156,6 +161,8 @@ class MainActivity : ComponentActivity() {
                             DialerRoot(
                                 externalNumber = externalNumber,
                                 onExternalNumberConsumed = { externalNumber = null },
+                                externalMessagePeer = externalMessagePeer,
+                                onExternalMessageConsumed = { externalMessagePeer = null },
                                 themeMode = themeMode,
                                 onThemeModeChange = { mode ->
                                     themeMode = mode
@@ -176,13 +183,17 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun captureExternalNumber(intent: Intent?) {
+        if (intent?.action == SmsNotifier.ACTION) {
+            externalMessagePeer = intent.getStringExtra(SmsNotifier.PEER)
+            return
+        }
         if (intent?.action !in setOf(Intent.ACTION_DIAL, Intent.ACTION_VIEW, Intent.ACTION_SENDTO)) return
         if (intent?.data?.scheme != "tel") return
         externalNumber = intent.data?.schemeSpecificPart
     }
 }
 
-private enum class WorkspaceSection(val label: String) { Dialler("Dialler"), Recents("Recents"), Contacts("Contacts") }
+private enum class WorkspaceSection(val label: String) { Dialler("Dialler"), Recents("Recents"), Contacts("Contacts"), Messages("Messages") }
 
 private data class CallPermissionStatus(
     val missingRuntimePermissions: List<String>,
@@ -237,6 +248,8 @@ private fun inspectCallPermissions(context: Context): CallPermissionStatus {
 private fun DialerRoot(
     externalNumber: String?,
     onExternalNumberConsumed: () -> Unit,
+    externalMessagePeer: String?,
+    onExternalMessageConsumed: () -> Unit,
     themeMode: ThemeMode,
     onThemeModeChange: (ThemeMode) -> Unit,
 ) {
@@ -245,6 +258,7 @@ private fun DialerRoot(
     val call by VoiceManager.activeCall.collectAsStateWithLifecycle()
     val registration by VoiceManager.registration.collectAsStateWithLifecycle()
     val diagnostics by DiagnosticLog.entries.collectAsStateWithLifecycle()
+    val smsState by SmsManager.state.collectAsStateWithLifecycle()
     val audioRoute by AudioRouter.audioRoute.collectAsStateWithLifecycle()
     val audioRoutes by AudioRouter.availableRoutes.collectAsStateWithLifecycle()
 
@@ -363,6 +377,10 @@ private fun DialerRoot(
             section = WorkspaceSection.Dialler
             onExternalNumberConsumed()
         }
+    }
+    LaunchedEffect(uiState.config) { SmsManager.configure(uiState.config) }
+    LaunchedEffect(externalMessagePeer) {
+        if (externalMessagePeer != null) { section = WorkspaceSection.Messages; settingsOpen = false }
     }
     LaunchedEffect(call.state) {
         if (call.isLive || call.state == CallState.Failed) callPanelVisible = true
@@ -504,6 +522,8 @@ private fun DialerRoot(
                 settingsOpen = false
                 true
             } else false
+        } else if (section == WorkspaceSection.Messages) {
+            false
         } else if (event.isCtrlPressed) {
             when {
                 event.isShiftPressed && event.key == Key.H -> {
@@ -558,7 +578,9 @@ private fun DialerRoot(
         val compactCallOnly = compact && callPanelVisible && call.state != CallState.Idle
         Column(Modifier.fillMaxSize()) {
             if (!compactCallOnly) {
-                AppHeader(registration = registration, onSettings = { settingsOpen = true })
+                AppHeader(registration = registration, onSettings = { settingsOpen = true },
+                    showMessagesAction = !compact, messagesSelected = section == WorkspaceSection.Messages,
+                    onMessages = { section = if (section == WorkspaceSection.Messages) WorkspaceSection.Dialler else WorkspaceSection.Messages })
                 HorizontalDivider()
             }
             Box(Modifier.weight(1f)) {
@@ -597,6 +619,10 @@ private fun DialerRoot(
                                 onClear = { number = "" },
                                 onDial = ::dialEnteredNumber,
                             )
+                            section == WorkspaceSection.Messages -> MessagesScreen(
+                                contacts = uiState.contacts, externalPeer = externalMessagePeer,
+                                onExternalPeerConsumed = onExternalMessageConsumed,
+                            )
                             section == WorkspaceSection.Recents -> HistoryScreen(
                                 calls = uiState.history,
                                 contacts = uiState.contacts,
@@ -623,11 +649,12 @@ private fun DialerRoot(
                     }
                     if (!compactCallOnly) {
                         NavigationBar {
-                            listOf(WorkspaceSection.Dialler, WorkspaceSection.Contacts).forEach { item ->
+                            listOf(WorkspaceSection.Dialler, WorkspaceSection.Contacts, WorkspaceSection.Messages).forEach { item ->
                                 val icon = when (item) {
                                     WorkspaceSection.Dialler -> Icons.Default.Dialpad
                                     WorkspaceSection.Recents -> Icons.Default.History
                                     WorkspaceSection.Contacts -> Icons.Default.Contacts
+                                    WorkspaceSection.Messages -> Icons.AutoMirrored.Filled.Message
                                 }
                                 NavigationBarItem(
                                     selected = section == item,
@@ -640,10 +667,22 @@ private fun DialerRoot(
                                         }
                                     },
                                     icon = { Icon(icon, contentDescription = item.label) },
-                                    label = { Text(item.label) },
+                                    label = { Text(if (item == WorkspaceSection.Messages && smsState.unread.isNotEmpty()) "Messages (${smsState.unread.size})" else item.label) },
                                 )
                             }
                         }
+                    }
+                }
+            } else if (section == WorkspaceSection.Messages) {
+                Row(Modifier.fillMaxSize()) {
+                    MessagesScreen(contacts = uiState.contacts, modifier = Modifier.weight(1f),
+                        externalPeer = externalMessagePeer, onExternalPeerConsumed = onExternalMessageConsumed)
+                    if (callPanelVisible && call.state != CallState.Idle) {
+                        ActiveCallPanel(call = call, contactName = activeContactName, audioRoute = audioRoute,
+                            audioRoutes = audioRoutes, compact = false, keypadVisible = keypadVisible,
+                            onKeypad = { keypadVisible = !keypadVisible }, onDtmf = sendDtmf,
+                            onDismiss = { callPanelVisible = false }, onCopyDiagnostics = copyDiagnostics,
+                            modifier = Modifier.weight(1f))
                     }
                 }
             } else {
@@ -775,7 +814,8 @@ private fun DialerRoot(
 }
 
 @Composable
-private fun AppHeader(registration: RegistrationState, onSettings: () -> Unit) {
+private fun AppHeader(registration: RegistrationState, onSettings: () -> Unit,
+    showMessagesAction: Boolean, messagesSelected: Boolean, onMessages: () -> Unit) {
     Surface(
         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
         contentColor = MaterialTheme.colorScheme.onSurface,
@@ -786,8 +826,10 @@ private fun AppHeader(registration: RegistrationState, onSettings: () -> Unit) {
         ) {
             Column(Modifier.weight(1f)) {
                 Text("DashPhone", style = MaterialTheme.typography.titleLarge, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
-                Text("Twilio voice", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Twilio voice & SMS", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            if (showMessagesAction) FilterChip(selected = messagesSelected, onClick = onMessages,
+                label = { Text(if (messagesSelected) "Back to dialler" else "Messages") })
             RegistrationStatusChip(registration)
             IconButton(onClick = onSettings, modifier = Modifier.padding(start = 6.dp)) {
                 Icon(Icons.Default.Settings, contentDescription = "Settings (Ctrl+,)")
